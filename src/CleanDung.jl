@@ -1,13 +1,32 @@
 module CleanDung
 
-using DelimitedFiles
+using DelimitedFiles, ProgressMeter
 
 export getdata
 
-absfolders(dir) = filter(isdir, [joinpath(abspath(dir), d) for d in readdir(dir) if d[1] ≠ '.'])
+# utility functions 
+isnothidden(x) = x[1] ≠ '.'
+isgooddir(root, x) = isdir(joinpath(root, x)) && isnothidden(x)
+isgoodfile(root, x) = isfile(joinpath(root, x)) && isnothidden(x)
+absfolders(dir) = filter(isdir, [joinpath(abspath(dir), d) for d in readdir(dir) if isnothidden(d)])
+function makenextrun(dir) 
+    nextrun = joinpath(dir, string(length(absfolders(dir)) + 1))
+    mkdir(nextrun)
+    nextrun
+end
+
+function my_mktempdir()
+    dir = tempname()
+    while isdir(dir)
+        dir = tempname()
+    end
+    mkdir(dir)
+end
 
 # absreaddir(dir) = joinpath.(abspath(dir), readdir(dir))
 # nohiddens(path) = all(d[1] ≠ '.' for d in split(path, '/') if !isempty(d)) # replace with splitpath in Julia v1.1
+
+# core fcuntions 
 
 function getsetup(experiment)
     fls = Dict{String, String}()
@@ -17,12 +36,6 @@ function getsetup(experiment)
     end
     fls
 end
-
-getnextrun(dir) = string(length(absfolders(dir)) + 1)
-
-isnothidden(x) = x[1] ≠ '.'
-isgooddir(root, x) = isdir(joinpath(root, x)) && isnothidden(x)
-isgoodfile(root, x) = isfile(joinpath(root, x)) && isnothidden(x)
 
 function getfl(dir, fl₀)
     fl = copy(fl₀)
@@ -44,7 +57,7 @@ function getfiles(dir)
 end
 
 function copy2local(path, datadir)
-    for experiment in readdir(path)
+    @showprogress  1 "fetching all the experiments…" for experiment in readdir(path)
         if isgooddir(path, experiment)
             FL = getsetup(experiment)
             pathexp = joinpath(path, experiment)
@@ -53,37 +66,47 @@ function copy2local(path, datadir)
                     pathexpr = joinpath(pathexp, r)
                     fl = getfl(pathexpr, FL)
                     files = getfiles(pathexpr)
-                    nextrun = getnextrun(datadir)
-                    mkdir(joinpath(datadir, nextrun))
-                    writedlm(joinpath(datadir, nextrun, "factors.csv"), fl, ',')
+                    nextrun = makenextrun(datadir)
+                    writedlm(joinpath(nextrun, "factors.csv"), fl, ',')
                     for file in files
-                        cp(joinpath(pathexpr, file), joinpath(datadir, nextrun, file), force = true)
-                        @info "Copied $file"
+                        cp(joinpath(pathexpr, file), joinpath(nextrun, file), force = true)
                     end
+                end
+            end
+        end
+    end
+    @info "all the data is now in $datadir"
+end
+
+macro tryagain(ex)
+    quote
+        for i in 1:5
+            try 
+                $(esc(ex))
+                break
+            catch except
+                @warn "failed! trying $(5-i) more times"
+                if i < 5
+                    sleep(1)
+                    continue
+                else
+                    throw(except)
                 end
             end
         end
     end
 end
 
-function getdata()
-    datadir = tempname()
-    while isdir(datadir)
-        datadir = tempname()
-    end
-    mkdir(datadir)
-    mktempdir() do path
-        gdfuse_config = joinpath(@__DIR__, "gdfuse_config")
-        run(`google-drive-ocamlfuse -config $gdfuse_config $path`)
-        try
-            copy2local(path, datadir)
-        catch
-            @warn "first pass crashed, trying one more time…"
-            copy2local(path, datadir)
-        end
-        run(`fusermount -u $path`)
-        run(`google-drive-ocamlfuse -cc`)
-    end
+function getdata(;clean_cash = false)
+    datadir = my_mktempdir()
+    path = my_mktempdir()
+    gdfuse_config = joinpath(@__DIR__, "gdfuse_config")
+    run(`google-drive-ocamlfuse -config $gdfuse_config $path`)
+    @tryagain copy2local(path, datadir)
+    cmd = `fusermount -zu $path`
+    @tryagain run(cmd)
+    clean_cash && @tryagain run(`google-drive-ocamlfuse -cc`)
+    rm(path)
     datadir
 end
 

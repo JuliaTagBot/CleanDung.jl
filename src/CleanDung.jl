@@ -1,8 +1,10 @@
 module CleanDung
 
-using DelimitedFiles, ProgressMeter
+using DataFrames, CSV, ProgressMeter
 
 export getdata
+
+const factor_filename = "factors.csv"
 
 # utility functions 
 isnothidden(x) = x[1] ≠ '.'
@@ -39,9 +41,17 @@ end
 
 function getfl(dir, fl₀)
     fl = copy(fl₀)
-    x = readdlm(joinpath(dir, "factors.csv"), ',', String)
-    for i in 1:size(x, 1)
-        fl[x[i,1]] = x[i,2]
+    x = CSV.File(joinpath(dir, factor_filename), header=["factor", "level"], types=[String, Union{String, Missing}]) |> CSV.transform(factor = strip, level = x -> ismissing(x) ? missing : strip(x)) |> DataFrame
+    dropmissing!(x)
+    @assert allunique(x[:factor]) "factors not unique in $dir"
+    for r in eachrow(x)
+        if haskey(fl, r[:factor])
+            key = r[:factor]
+            oldv = fl[key]
+            newv = r[:level]
+            @warn "overwriting $key:$oldv with $newv in $dir"
+        end
+        fl[r[:factor]] = r[:level]
     end
     fl
 end
@@ -63,13 +73,13 @@ function copy2local(path, datadir)
             pathexp = joinpath(path, experiment)
             for r in readdir(pathexp)
                 if isgooddir(pathexp, r)
-                    pathexpr = joinpath(pathexp, r)
-                    fl = getfl(pathexpr, FL)
-                    files = getfiles(pathexpr)
+                    pathrun = joinpath(pathexp, r)
+                    fl = getfl(pathrun, FL)
+                    files = getfiles(pathrun)
                     nextrun = makenextrun(datadir)
                     writedlm(joinpath(nextrun, "factors.csv"), fl, ',')
                     for file in files
-                        cp(joinpath(pathexpr, file), joinpath(nextrun, file), force = true)
+                        cp(joinpath(pathrun, file), joinpath(nextrun, file), force = true)
                     end
                 end
             end
